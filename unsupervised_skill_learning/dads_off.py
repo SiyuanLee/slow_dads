@@ -67,6 +67,8 @@ from envs import hand_block
 
 from lib import py_tf_policy
 from lib import py_uniform_replay_buffer
+sys.path.append('..')
+from lib.utils import print_color
 
 FLAGS = flags.FLAGS
 nest = tf.nest
@@ -118,6 +120,7 @@ flags.DEFINE_integer('num_epochs', 500, 'Number of training epochs')
 flags.DEFINE_integer('num_skills', 2, 'Number of skills to learn')
 flags.DEFINE_string('skill_type', 'cont_uniform',
                     'Type of skill and the prior over it')
+flags.DEFINE_float('loss_coeff', 0.1, 'coeff of feature loss')
 # network size hyperparameter
 flags.DEFINE_integer(
     'hidden_layer_size', 512,
@@ -705,7 +708,9 @@ def eval_loop(eval_dir,
               plot_name=None,
               per_skill_evaluations=1,
               plot_std=False,
-              xlim=15):
+              xlim=15,
+              plot_feature=False,
+              iter_count=None):
     metadata = tf.io.gfile.GFile(
         os.path.join(eval_dir, 'metadata.txt'), 'a')
     if FLAGS.num_skills == 0:
@@ -728,6 +733,7 @@ def eval_loop(eval_dir,
         # all_predicted_trajectories = []
 
     Traj_std = []
+    Trajectory_feature = []
     for idx in range(num_evals):
         if FLAGS.num_skills > 0:
             if FLAGS.deterministic_eval:
@@ -784,10 +790,12 @@ def eval_loop(eval_dir,
             ])
             Trajectory_list.append(trajectory_coordinates)
 
-            # trajectory_states = np.array([
-            #     eval_trajectory[step_idx][0]
-            #     for step_idx in range(len(eval_trajectory))
-            # ])
+            trajectory_states = np.array([
+                eval_trajectory[step_idx][0]
+                for step_idx in range(len(eval_trajectory))
+            ])
+            _, trajectory_feature = dynamics.eval_phi(trajectory_states)
+            Trajectory_feature.append(trajectory_feature)
             # trajectories_per_skill.append(trajectory_states)
             if plot_name is not None:
                 plt.plot(
@@ -844,18 +852,21 @@ def eval_loop(eval_dir,
     #         os.path.join(vid_dir, 'skill_dynamics_full_obs_r100_predicted_trajectories.pkl'),
     #         'wb'))
     if plot_name is not None:
-        full_image_name = plot_name + '.png'
+        full_image_name = plot_name + "_" + str(iter_count) + '.png'
 
         # to save images while writing to CNS
         buf = io.BytesIO()
         # plt.title('Trajectories in Continuous Skill Space')
         plt.savefig(buf, dpi=600, bbox_inches='tight')
         buf.seek(0)
-        image = tf.io.gfile.GFile(os.path.join(eval_dir, full_image_name), 'w')
+        if iter_count is not None:
+            image = tf.io.gfile.GFile(os.path.join(eval_dir, "../trajectories", full_image_name), 'w')
+        else:
+            image = tf.io.gfile.GFile(os.path.join(eval_dir, full_image_name), 'w')
         image.write(buf.read(-1))
-
         # clear before next plot
         plt.clf()
+
         if plot_std:
             # plot std
             plt.plot(Traj_std_mean)
@@ -867,10 +878,25 @@ def eval_loop(eval_dir,
             buf.seek(0)
             image = tf.io.gfile.GFile(os.path.join(eval_dir, 'variance.png'), 'w')
             image.write(buf.read(-1))
-
             # clear before next plot
             plt.clf()
 
+        if plot_feature:
+            # plot feature
+            for idx in range(len(Trajectory_feature)):
+                plt.plot(
+                    Trajectory_feature[idx][:, 0],
+                    Trajectory_feature[idx][:, 1],
+                    style_map[idx % len(style_map)],)
+                # to save images while writing to CNS
+                buf = io.BytesIO()
+                plt.title('Trajectories in Feature Space')
+                plt.savefig(buf, dpi=600, bbox_inches='tight')
+                buf.seek(0)
+                image = tf.io.gfile.GFile(os.path.join(eval_dir, 'feature.png'), 'w')
+                image.write(buf.read(-1))
+                # clear before next plot
+            plt.clf()
 
 
 # discrete primitives only, useful with skill-dynamics
@@ -1217,6 +1243,8 @@ def main(_):
             reweigh_batches_flag = True
         else:
             reweigh_batches_flag = False
+        print_color("loss_coeff:")
+        print(FLAGS.loss_coeff)
         print("reweigh_batches_flag", reweigh_batches_flag, "!!!")
 
         agent = dads_agent.DADSAgent(
@@ -1236,6 +1264,7 @@ def main(_):
             reweigh_batches=reweigh_batches_flag,
             skill_dynamics_learning_rate=FLAGS.skill_dynamics_lr,
             learn_slow_feature=FLAGS.learn_slow_feature,
+            loss_coeff=FLAGS.loss_coeff,
             # SAC parameters
             time_step_spec=tf_agent_time_step_spec,
             action_spec=tf_action_spec,
@@ -1455,7 +1484,7 @@ def main(_):
                         neg_sample = process_observation(trajectory_sample.observation[:, -1, :-FLAGS.num_skills])
                         if FLAGS.clear_buffer_every_iter:
                             # print("train skill dynamics here !!!")
-                            agent.skill_dynamics.train(
+                            dist_loss = agent.skill_dynamics.train(
                                 input_obs,
                                 cur_skill,
                                 target_obs,
@@ -1573,6 +1602,13 @@ def main(_):
                                 tag='dads/logp_altz',
                                 simple_value=np.mean(np.concatenate(running_logp_altz)))
                         ]), sample_count)
+                    # record feature loss
+                    train_writer.add_summary(
+                        tf.compat.v1.Summary(value=[
+                            tf.compat.v1.Summary.Value(
+                                tag='dads/feature_loss',
+                                simple_value=dist_loss)
+                        ]), sample_count)
 
                     if FLAGS.clear_buffer_every_iter:
                         rbuffer.clear()
@@ -1583,13 +1619,16 @@ def main(_):
                     # within train loop evaluation
                     if FLAGS.record_freq is not None and iter_count % FLAGS.record_freq == 0:
                         cur_vid_dir = os.path.join(log_dir, 'videos', str(iter_count))
+                        trajectory_dir = os.path.join(cur_vid_dir, "../trajectories/")
+                        tf.io.gfile.makedirs(trajectory_dir)
                         tf.io.gfile.makedirs(cur_vid_dir)
                         eval_loop(
                             cur_vid_dir,
                             eval_policy,
                             dynamics=agent.skill_dynamics,
                             vid_name=FLAGS.vid_name,
-                            plot_name='traj_plot')
+                            plot_name='traj_plot',
+                            iter_count=iter_count)
 
                     iter_count += 1
 

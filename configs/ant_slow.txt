@@ -1,5 +1,5 @@
 ### TRAINING HYPERPARAMETERS -------------------
---run_train=1
+--run_train=0
 
 # metadata flags
 --save_model=dads
@@ -48,10 +48,11 @@
 --neg_k=20
 
 # define the type of skills being learnt
---num_skills=2
+--num_skills=30
 --skill_type=cont_uniform
 --random_skills=100
 --num_evals=3
+--loss_coeff=1.0
 
 # (optional) policy, critic and skill dynamics
 --hidden_layer_size=512
@@ -71,7 +72,7 @@
 
 ### EVALUATION HYPERPARAMETERS -----------------
 --run_eval=0
---run_eval_loop=0
+--run_eval_loop=1
 
 # MPC hyperparameters
 --planning_horizon=1

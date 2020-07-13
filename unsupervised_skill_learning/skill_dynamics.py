@@ -44,7 +44,8 @@ class SkillDynamics:
       reweigh_batches=False,
       graph=None,
       scope_name='skill_dynamics',
-      learn_slow_feature=False):
+      learn_slow_feature=False,
+      loss_coeff=0.1):
 
     self._observation_size = observation_size
     self._action_size = action_size
@@ -52,6 +53,7 @@ class SkillDynamics:
     self._restrict_observation = restrict_observation
     self._reweigh_batches = reweigh_batches
     self._learn_slow_feature = learn_slow_feature
+    self.loss_coeff = loss_coeff
     if learn_slow_feature:
         self.predict_dim = 2
     else:
@@ -176,25 +178,25 @@ class SkillDynamics:
         # stop gradient for target feature
         next_ts = tf.stop_gradient(next_ts)
       # compress feature to 2 dims
-      ts_out = tf.compat.v1.layers.dense(
+      self.ts_out = ts_out = tf.compat.v1.layers.dense(
           ts_out,
           2,
           activation=None,
           name='feature',
           reuse=tf.compat.v1.AUTO_REUSE)
-      pos_out = tf.compat.v1.layers.dense(
+      self.pos_out = pos_out = tf.compat.v1.layers.dense(
           pos_out,
           2,
           activation=None,
           name='feature',
           reuse=tf.compat.v1.AUTO_REUSE)
-      neg_out = tf.compat.v1.layers.dense(
+      self.neg_out = neg_out = tf.compat.v1.layers.dense(
           neg_out,
           2,
           activation=None,
           name='feature',
           reuse=tf.compat.v1.AUTO_REUSE)
-      next_ts = tf.compat.v1.layers.dense(
+      self.next_ts = next_ts = tf.compat.v1.layers.dense(
           next_ts,
           2,
           activation=None,
@@ -412,7 +414,7 @@ class SkillDynamics:
           if self._learn_slow_feature:
               self.dyn_max_op = tf.compat.v1.train.AdamOptimizer(
                   learning_rate=learning_rate,
-                  name='adam_max').minimize(-tf.reduce_mean(self.log_probability) + self.dist_loss)
+                  name='adam_max').minimize(-tf.reduce_mean(self.log_probability) + self.loss_coeff * self.dist_loss)
               print_color("Optmize slow feature and log prob !!!")
           else:
               self.dyn_max_op = tf.compat.v1.train.AdamOptimizer(
@@ -483,9 +485,10 @@ class SkillDynamics:
     else:
       run_op = self.dyn_min_op
 
+    loss_log = []
     for _ in range(num_steps):
-      self._session.run(
-          run_op,
+      _, dist_loss = self._session.run(
+          [run_op, self.dist_loss],
           feed_dict=self._get_dict(
               timesteps,
               actions,
@@ -494,6 +497,8 @@ class SkillDynamics:
               batch_weights=batch_weights,
               batch_size=batch_size,
               batch_norm=True))
+      loss_log.append(dist_loss)
+    return np.mean(loss_log)
 
   def get_log_prob(self, timesteps, actions, next_timesteps):
     if not self._use_placeholders:
@@ -504,6 +509,12 @@ class SkillDynamics:
         self.log_probability,
         feed_dict=self._get_dict(
             timesteps, actions, next_timesteps, neg_sample, batch_norm=False))
+
+  def eval_phi(self, timesteps):
+      return self._session.run([self.ts_out, self.neg_out],
+                               feed_dict={self.timesteps_pl: timesteps,
+                                          self.neg_sample_pl: timesteps,
+                                          self.is_training_pl: False})
 
   def predict_state(self, timesteps, actions):
     if not self._use_placeholders:
