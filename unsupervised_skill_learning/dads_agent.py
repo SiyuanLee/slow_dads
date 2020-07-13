@@ -52,6 +52,7 @@ class DADSAgent(sac_agent.SacAgent):
                reweigh_batches=False,
                agent_graph=None,
                skill_dynamics_graph=None,
+               learn_slow_feature=False,
                *sac_args,
                **sac_kwargs):
     self._skill_dynamics_learning_rate = skill_dynamics_learning_rate
@@ -81,7 +82,8 @@ class DADSAgent(sac_agent.SacAgent):
         num_components=num_mixture_components,
         fix_variance=fix_variance,
         reweigh_batches=reweigh_batches,
-        graph=skill_dynamics_graph)
+        graph=skill_dynamics_graph,
+        learn_slow_feature=learn_slow_feature)
 
     super(DADSAgent, self).__init__(*sac_args, **sac_kwargs)
     self._placeholders_in_place = False

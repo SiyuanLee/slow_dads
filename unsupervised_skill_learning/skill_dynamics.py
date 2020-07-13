@@ -22,6 +22,9 @@ import os
 import numpy as np
 import tensorflow as tf
 import tensorflow_probability as tfp
+import sys
+sys.path.append('..')
+from lib.utils import print_color
 
 
 # TODO(architsh): Implement the dynamics with last K step input
@@ -40,13 +43,19 @@ class SkillDynamics:
       fix_variance=False,
       reweigh_batches=False,
       graph=None,
-      scope_name='skill_dynamics'):
+      scope_name='skill_dynamics',
+      learn_slow_feature=False):
 
     self._observation_size = observation_size
     self._action_size = action_size
     self._normalize_observations = normalize_observations
     self._restrict_observation = restrict_observation
     self._reweigh_batches = reweigh_batches
+    self._learn_slow_feature = learn_slow_feature
+    if learn_slow_feature:
+        self.predict_dim = 2
+    else:
+        self.predict_dim = observation_size
 
     # tensorflow requirements
     if graph is not None:
@@ -83,7 +92,7 @@ class SkillDynamics:
         means.append(
             tf.compat.v1.layers.dense(
                 out,
-                self._observation_size,
+                self.predict_dim,
                 name='mean_' + str(component_id),
                 reuse=tf.compat.v1.AUTO_REUSE))
         if not self._fix_variance:
@@ -91,14 +100,14 @@ class SkillDynamics:
               tf.clip_by_value(
                   tf.compat.v1.layers.dense(
                       out,
-                      self._observation_size,
+                      self.predict_dim,
                       activation=tf.nn.softplus,
                       name='stddev_' + str(component_id),
                       reuse=tf.compat.v1.AUTO_REUSE), self._std_lower_clip,
                   self._std_upper_clip))
         else:
           scale_diags.append(
-              tf.fill([tf.shape(out)[0], self._observation_size], 1.0))
+              tf.fill([tf.shape(out)[0], self.predict_dim], 1.0))
 
       self.means = tf.stack(means, axis=1)
       self.scale_diags = tf.stack(scale_diags, axis=1)
@@ -126,7 +135,7 @@ class SkillDynamics:
           loc=mean, scale_diag=stddev)
 
   # dynamics graph with separate pipeline for skills and timesteps
-  def _graph_with_separate_skill_pipe(self, timesteps, actions):
+  def _graph_with_separate_skill_pipe(self, timesteps, actions, pos_sample, neg_sample, next_timesteps):
     skill_out = actions
     with tf.compat.v1.variable_scope('action_pipe'):
       for idx, layer_size in enumerate((self._fc_layer_params[0] // 2,)):
@@ -137,7 +146,7 @@ class SkillDynamics:
             name='hid_' + str(idx),
             reuse=tf.compat.v1.AUTO_REUSE)
 
-    ts_out = timesteps
+    ts_out, next_ts, pos_out, neg_out = timesteps, next_timesteps, pos_sample, neg_sample
     with tf.compat.v1.variable_scope('ts_pipe'):
       for idx, layer_size in enumerate((self._fc_layer_params[0] // 2,)):
         ts_out = tf.compat.v1.layers.dense(
@@ -146,11 +155,64 @@ class SkillDynamics:
             activation=tf.nn.relu,
             name='hid_' + str(idx),
             reuse=tf.compat.v1.AUTO_REUSE)
+        pos_out = tf.compat.v1.layers.dense(
+            pos_out,
+            layer_size,
+            activation=tf.nn.relu,
+            name='hid_' + str(idx),
+            reuse=tf.compat.v1.AUTO_REUSE)
+        neg_out = tf.compat.v1.layers.dense(
+            neg_out,
+            layer_size,
+            activation=tf.nn.relu,
+            name='hid_' + str(idx),
+            reuse=tf.compat.v1.AUTO_REUSE)
+        next_ts = tf.compat.v1.layers.dense(
+            next_ts,
+            layer_size,
+            activation=tf.nn.relu,
+            name='hid_' + str(idx),
+            reuse=tf.compat.v1.AUTO_REUSE)
+        # stop gradient for target feature
+        next_ts = tf.stop_gradient(next_ts)
+      # compress feature to 2 dims
+      ts_out = tf.compat.v1.layers.dense(
+          ts_out,
+          2,
+          activation=None,
+          name='feature',
+          reuse=tf.compat.v1.AUTO_REUSE)
+      pos_out = tf.compat.v1.layers.dense(
+          pos_out,
+          2,
+          activation=None,
+          name='feature',
+          reuse=tf.compat.v1.AUTO_REUSE)
+      neg_out = tf.compat.v1.layers.dense(
+          neg_out,
+          2,
+          activation=None,
+          name='feature',
+          reuse=tf.compat.v1.AUTO_REUSE)
+      next_ts = tf.compat.v1.layers.dense(
+          next_ts,
+          2,
+          activation=None,
+          name='feature',
+          reuse=tf.compat.v1.AUTO_REUSE)
+      # stop gradient for target feature
+      next_ts = tf.stop_gradient(next_ts)
+      min_dist = tf.reduce_mean(tf.square(ts_out-pos_out), -1)
+      max_dist = 1 - tf.reduce_mean(tf.square(neg_out - ts_out), -1)
+      max_dist = tf.maximum(max_dist, 0.)
+      dist_loss = tf.reduce_mean(max_dist + min_dist)
+      print_color("dist loss:")
+      print(dist_loss)
 
     # out = tf.compat.v1.layers.flatten(tf.einsum('ai,aj->aij', ts_out, skill_out))
     out = tf.concat([ts_out, skill_out], axis=1)
     with tf.compat.v1.variable_scope('joint'):
-      for idx, layer_size in enumerate(self._fc_layer_param[1:]):
+      for idx, layer_size in enumerate(self._fc_layer_params[1:]):
         out = tf.compat.v1.layers.dense(
             out,
             layer_size,
@@ -158,7 +220,8 @@ class SkillDynamics:
             name='hid_' + str(idx),
             reuse=tf.compat.v1.AUTO_REUSE)
 
-    return self._get_distribution(out)
+    print_color("use seperate network !!!")
+    return self._get_distribution(out), dist_loss, next_ts
 
   # simple dynamics graph
   def _default_graph(self, timesteps, actions):
@@ -177,6 +240,7 @@ class SkillDynamics:
                 input_data,
                 input_actions,
                 target_data,
+                neg_sample,
                 batch_size=-1,
                 batch_weights=None,
                 batch_norm=False,
@@ -191,6 +255,10 @@ class SkillDynamics:
     batched_input = input_data[shuffled_batch, :]
     batched_skills = input_actions[shuffled_batch, :]
     batched_targets = target_data[shuffled_batch, :]
+    if neg_sample is not None:
+        batched_neg = neg_sample[shuffled_batch, :]
+    else:
+        batched_neg = batched_input
 
     if self._reweigh_batches and batch_weights is not None:
       example_weights = batch_weights[shuffled_batch]
@@ -201,7 +269,9 @@ class SkillDynamics:
     return_dict = {
         self.timesteps_pl: batched_input,
         self.actions_pl: batched_skills,
-        self.next_timesteps_pl: batched_targets
+        self.next_timesteps_pl: batched_targets,
+        self.pos_sample_pl: batched_targets,
+        self.neg_sample_pl: batched_neg,
     }
     if self._normalize_observations:
       return_dict[self.is_training_pl] = batch_norm
@@ -225,6 +295,10 @@ class SkillDynamics:
     with self._graph.as_default(), tf.compat.v1.variable_scope(self._scope_name):
       self.timesteps_pl = tf.compat.v1.placeholder(
           tf.float32, shape=(None, self._observation_size), name='timesteps_pl')
+      self.pos_sample_pl = tf.compat.v1.placeholder(
+          tf.float32, shape=(None, self._observation_size), name='pos_pl')
+      self.neg_sample_pl = tf.compat.v1.placeholder(
+          tf.float32, shape=(None, self._observation_size), name='neg_pl')
       self.actions_pl = tf.compat.v1.placeholder(
           tf.float32, shape=(None, self._action_size), name='actions_pl')
       self.next_timesteps_pl = tf.compat.v1.placeholder(
@@ -270,6 +344,8 @@ class SkillDynamics:
         self._scope_name, reuse=tf.compat.v1.AUTO_REUSE):
       if self._use_placeholders:
         timesteps = self.timesteps_pl
+        pos_sample = self.pos_sample_pl
+        neg_sample = self.neg_sample_pl
         actions = self.actions_pl
         next_timesteps = self.next_timesteps_pl
         if self._normalize_observations:
@@ -278,14 +354,28 @@ class SkillDynamics:
       # predict deltas instead of observations
       next_timesteps -= timesteps
 
-      if self._restrict_observation > 0:
-        timesteps = timesteps[:, self._restrict_observation:]
+      print("restrict observation", self._restrict_observation, "!!!")
+      print("timestep", timesteps)
+      print_color("NOT clip observation !!!")
+      # if self._restrict_observation > 0:
+      #   timesteps = timesteps[:, self._restrict_observation:]
 
       if self._normalize_observations:
         timesteps = tf.compat.v1.layers.batch_normalization(
             timesteps,
             training=is_training,
             name='input_normalization',
+            reuse=tf.compat.v1.AUTO_REUSE)
+        # add batch norm for pos sample and neg sample
+        pos_sample = tf.compat.v1.layers.batch_normalization(
+            pos_sample,
+            training=is_training,
+            name='pos_normalization',
+            reuse=tf.compat.v1.AUTO_REUSE)
+        neg_sample = tf.compat.v1.layers.batch_normalization(
+            neg_sample,
+            training=is_training,
+            name='neg_normalization',
             reuse=tf.compat.v1.AUTO_REUSE)
         self.output_norm_layer = tf.compat.v1.layers.BatchNormalization(
             scale=False, center=False, name='output_normalization')
@@ -295,8 +385,8 @@ class SkillDynamics:
       if self._network_type == 'default':
         self.base_distribution = self._default_graph(timesteps, actions)
       elif self._network_type == 'separate':
-        self.base_distribution = self._graph_with_separate_skill_pipe(
-            timesteps, actions)
+        self.base_distribution, self.dist_loss, next_timesteps = self._graph_with_separate_skill_pipe(
+            timesteps, actions, pos_sample, neg_sample, next_timesteps)
 
       # if building multiple times, be careful about which log_prob you are optimizing
       self.log_probability = self.base_distribution.log_prob(next_timesteps)
@@ -319,9 +409,15 @@ class SkillDynamics:
               name='adam_max').minimize(-tf.reduce_mean(self.log_probability *
                                                         weights))
         else:
-          self.dyn_max_op = tf.compat.v1.train.AdamOptimizer(
-              learning_rate=learning_rate,
-              name='adam_max').minimize(-tf.reduce_mean(self.log_probability))
+          if self._learn_slow_feature:
+              self.dyn_max_op = tf.compat.v1.train.AdamOptimizer(
+                  learning_rate=learning_rate,
+                  name='adam_max').minimize(-tf.reduce_mean(self.log_probability) + self.dist_loss)
+              print_color("Optmize slow feature and log prob !!!")
+          else:
+              self.dyn_max_op = tf.compat.v1.train.AdamOptimizer(
+                  learning_rate=learning_rate,
+                  name='adam_max').minimize(-tf.reduce_mean(self.log_probability))
 
         return self.dyn_max_op
 
@@ -374,6 +470,7 @@ class SkillDynamics:
             timesteps,
             actions,
             next_timesteps,
+            neg_sample,
             batch_weights=None,
             batch_size=512,
             num_steps=1,
@@ -393,6 +490,7 @@ class SkillDynamics:
               timesteps,
               actions,
               next_timesteps,
+              neg_sample,
               batch_weights=batch_weights,
               batch_size=batch_size,
               batch_norm=True))
@@ -401,10 +499,11 @@ class SkillDynamics:
     if not self._use_placeholders:
       return
 
+    neg_sample = None
     return self._session.run(
         self.log_probability,
         feed_dict=self._get_dict(
-            timesteps, actions, next_timesteps, batch_norm=False))
+            timesteps, actions, next_timesteps, neg_sample, batch_norm=False))
 
   def predict_state(self, timesteps, actions):
     if not self._use_placeholders:

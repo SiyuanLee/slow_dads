@@ -201,8 +201,7 @@ class PyUniformReplayBuffer(replay_buffer.ReplayBuffer):
     self._np_state.size = np.int64(0)
     self._np_state.cur_id = np.int64(0)
 
-  def gather_all_transitions(self):
-    num_steps_value = 2
+  def gather_all_transitions(self, num_steps_value=2):
 
     def get_single(idx):
       """Gets the idx item from the replay buffer."""
