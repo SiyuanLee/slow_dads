@@ -84,8 +84,12 @@ flags.DEFINE_integer('reduced_observation', 0,
                      'Predict dynamics in a reduced observation space')
 flags.DEFINE_integer('learn_slow_feature', 0,
                      'Learn slow feature in skill dynamics')
-flags.DEFINE_integer('neg_k', 10,
+flags.DEFINE_integer('learn_feature_separ', 0,
+                     'Learn slow feature in skill dynamics')
+flags.DEFINE_integer('neg_k', 20,
                      'k step samples are regarded as negative samples')
+flags.DEFINE_integer('seed', 0,
+                     'fix random seed')
 flags.DEFINE_integer(
     'min_steps_before_resample', 50,
     'Minimum number of steps to execute before resampling skill')
@@ -733,6 +737,7 @@ def eval_loop(eval_dir,
         # all_predicted_trajectories = []
 
     Traj_std = []
+    Total_trajectory = []
     Trajectory_feature = []
     for idx in range(num_evals):
         if FLAGS.num_skills > 0:
@@ -794,8 +799,9 @@ def eval_loop(eval_dir,
                 eval_trajectory[step_idx][0]
                 for step_idx in range(len(eval_trajectory))
             ])
-            _, trajectory_feature = dynamics.eval_phi(trajectory_states)
-            Trajectory_feature.append(trajectory_feature)
+            if FLAGS.learn_slow_feature or FLAGS.learn_feature_separ:
+                trajectory_feature = dynamics.eval_phi(trajectory_states)
+                Trajectory_feature.append(trajectory_feature)
             # trajectories_per_skill.append(trajectory_states)
             if plot_name is not None:
                 plt.plot(
@@ -833,30 +839,33 @@ def eval_loop(eval_dir,
         # calculate std
         std_array = cal_std(Trajectory_list)
         Traj_std.append(std_array)
+        Total_trajectory.append(Trajectory_list)
 
     Traj_std = np.array(Traj_std)
     Traj_std_mean = np.mean(Traj_std, axis=0)
     error_bar = np.std(Traj_std, axis=0)
 
+
     # all_predicted_trajectories = np.stack(all_predicted_trajectories)
     # all_trajectories = np.stack(all_trajectories)
     # print(all_trajectories.shape, all_predicted_trajectories.shape)
-    # pkl.dump(
-    #     all_trajectories,
-    #     tf.io.gfile.GFile(
-    #         os.path.join(vid_dir, 'skill_dynamics_full_obs_r100_actual_trajectories.pkl'),
-    #         'wb'))
-    # pkl.dump(
-    #     all_predicted_trajectories,
-    #     tf.io.gfile.GFile(
-    #         os.path.join(vid_dir, 'skill_dynamics_full_obs_r100_predicted_trajectories.pkl'),
-    #         'wb'))
+    pkl.dump(
+        Total_trajectory,
+        tf.io.gfile.GFile(
+            os.path.join(eval_dir, 'total_trajectory.pkl'),
+            'wb'))
+    pkl.dump(
+        Traj_std,
+        tf.io.gfile.GFile(
+            os.path.join(eval_dir, 'Trajectory_std_{}.pkl'.format(iter_count)),
+            'wb'))
     if plot_name is not None:
         full_image_name = plot_name + "_" + str(iter_count) + '.png'
 
         # to save images while writing to CNS
         buf = io.BytesIO()
         # plt.title('Trajectories in Continuous Skill Space')
+        # plt.legend(loc='best')
         plt.savefig(buf, dpi=600, bbox_inches='tight')
         buf.seek(0)
         if iter_count is not None:
@@ -876,17 +885,19 @@ def eval_loop(eval_dir,
             plt.title('Trajectories Variance')
             plt.savefig(buf, dpi=600, bbox_inches='tight')
             buf.seek(0)
-            image = tf.io.gfile.GFile(os.path.join(eval_dir, 'variance.png'), 'w')
+            image = tf.io.gfile.GFile(os.path.join(eval_dir, 'variance_{}.png'.format(iter_count)), 'w')
             image.write(buf.read(-1))
             # clear before next plot
             plt.clf()
 
         if plot_feature:
             # plot feature
+            # print("trajectory_feature", trajectory_feature[0][:, 1])
             for idx in range(len(Trajectory_feature)):
+                print("idx", idx)
                 plt.plot(
-                    Trajectory_feature[idx][:, 0],
-                    Trajectory_feature[idx][:, 1],
+                    Trajectory_feature[idx][0][:, 0],
+                    Trajectory_feature[idx][0][:, 1],
                     style_map[idx % len(style_map)],)
                 # to save images while writing to CNS
                 buf = io.BytesIO()
@@ -963,6 +974,10 @@ def eval_planning(env,
     actual_coords = np.concatenate(actual_coords)
     return actual_reward, actual_coords, predicted_coords
 
+def compute_latent_reward(ob, goal):
+    reward = -np.linalg.norm(ob - goal, axis=1)
+    return reward
+
 
 def eval_mppi(
         env,
@@ -980,7 +995,9 @@ def eval_mppi(
         # no need to change generally
         sparsify_rewards=False,
         # only for uniform prior mode
-        top_primitives=5):
+        top_primitives=5,
+        use_latent=False,
+        goal_coord=None):
     """env: tf-agents environment without the skill wrapper.
 
      dynamics: skill-dynamics model learnt by DADS.
@@ -1064,6 +1081,12 @@ def eval_mppi(
     actual_coords = [np.expand_dims(time_step.observation[:2], 0)]
     actual_reward = 0.
     distance_to_goal_array = []
+    if use_latent:
+        goal = np.concatenate((goal_coord, time_step.observation[2:]))
+        goal = np.expand_dims(goal, 0)
+        latent_goal = dynamics.eval_phi(goal)[0]
+        print("latent_goal", latent_goal)
+    reward_threshold = -2
 
     primitive_parameters = []
     chosen_primitives = []
@@ -1087,16 +1110,23 @@ def eval_mppi(
             running_cur_state = np.array(
                 [process_observation(time_step.observation)] *
                 num_candidate_sequences)
+            if use_latent:
+                running_cur_state = dynamics.eval_phi(running_cur_state)[0]
             running_reward = np.zeros(num_candidate_sequences)
             for planning_idx in range(planning_horizon):
                 cur_primitives = candidate_primitive_sequences[:, planning_idx, :]
                 for _ in range(primitive_horizon):
-                    predicted_next_state = dynamics.predict_state(running_cur_state,
-                                                                  cur_primitives)
-
-                    # update running stuff
-                    dense_reward = env.compute_reward(running_cur_state,
-                                                      predicted_next_state)
+                    if use_latent:
+                        predicted_next_state = dynamics.predict_phi(running_cur_state,
+                                                                      cur_primitives)
+                        # update running stuff
+                        dense_reward = compute_latent_reward(predicted_next_state, latent_goal)
+                    else:
+                        predicted_next_state = dynamics.predict_state(running_cur_state,
+                                                                      cur_primitives)
+                        # update running stuff
+                        dense_reward = env.compute_reward(running_cur_state,
+                                                          predicted_next_state)
                     # modification for sparse_reward
                     if sparsify_rewards:
                         sparse_reward = 5.0 * (dense_reward > -2) + 0.0 * (
@@ -1132,17 +1162,23 @@ def eval_mppi(
                             time_step._replace(
                                 observation=skill_concat_observation))).action,
                     -FLAGS.action_clipping, FLAGS.action_clipping))
+            next_reward = next_time_step.reward
             actual_reward += next_time_step.reward
             distance_to_goal_array.append(next_time_step.reward)
             # prepare for next iteration
             time_step = next_time_step
             actual_coords.append(np.expand_dims(time_step.observation[:2], 0))
             step_idx += 1
+            if next_reward > reward_threshold:
+                break
             # print(step_idx)
         # print('Actual next co-ordinates:', actual_coords[-1])
 
         primitive_parameters.pop(0)
         primitive_parameters.append(_get_init_primitive_parameters())
+        if next_reward > reward_threshold:
+            print("success !!!")
+            break
 
     actual_coords = np.concatenate(actual_coords)
     return actual_reward, actual_coords, np.array(
@@ -1151,6 +1187,10 @@ def eval_mppi(
 
 def main(_):
     # setting up
+    assert FLAGS.learn_slow_feature + FLAGS.learn_feature_separ < 2
+    # set seed
+    np.random.seed(FLAGS.seed)
+    tf.random.set_seed(seed=FLAGS.seed)
     start_time = time.time()
     tf.compat.v1.enable_resource_variables()
     tf.compat.v1.disable_eager_execution()
@@ -1264,6 +1304,7 @@ def main(_):
             reweigh_batches=reweigh_batches_flag,
             skill_dynamics_learning_rate=FLAGS.skill_dynamics_lr,
             learn_slow_feature=FLAGS.learn_slow_feature,
+            learn_feature_separ=FLAGS.learn_feature_separ,
             loss_coeff=FLAGS.loss_coeff,
             # SAC parameters
             time_step_spec=tf_agent_time_step_spec,
@@ -1287,18 +1328,18 @@ def main(_):
             train_step_counter=global_step)
 
         # evaluation policy
-        eval_policy = py_tf_policy.PyTFPolicy(agent.policy)
+        eval_policy = py_tf_policy.PyTFPolicy(agent.policy, seed=FLAGS.seed)
 
         # collection policy
         if FLAGS.collect_policy == 'default':
-            collect_policy = py_tf_policy.PyTFPolicy(agent.collect_policy)
+            collect_policy = py_tf_policy.PyTFPolicy(agent.collect_policy, seed=FLAGS.seed)
         elif FLAGS.collect_policy == 'ou_noise':
             collect_policy = py_tf_policy.PyTFPolicy(
                 ou_noise_policy.OUNoisePolicy(
-                    agent.collect_policy, ou_stddev=0.2, ou_damping=0.15))
+                    agent.collect_policy, ou_stddev=0.2, ou_damping=0.15), seed=FLAGS.seed)
 
         # relabelling policy deals with batches of data, unlike collect and eval
-        relabel_policy = py_tf_policy.PyTFPolicy(agent.collect_policy)
+        relabel_policy = py_tf_policy.PyTFPolicy(agent.collect_policy, seed=FLAGS.seed)
 
         # constructing a replay buffer, need a python spec
         policy_step_spec = policy_step.PolicyStep(
@@ -1333,7 +1374,8 @@ def main(_):
         train_checkpointer = common.Checkpointer(
             ckpt_dir=os.path.join(save_dir, 'agent'),
             agent=agent,
-            global_step=global_step)
+            global_step=global_step,
+            max_to_keep=100)
         policy_checkpointer = common.Checkpointer(
             ckpt_dir=os.path.join(save_dir, 'policy'),
             policy=agent.policy,
@@ -1460,7 +1502,7 @@ def main(_):
                     for _ in range(1 if FLAGS.clear_buffer_every_iter else FLAGS
                             .skill_dyn_train_steps):
                         if FLAGS.clear_buffer_every_iter:
-                            if FLAGS.learn_slow_feature:
+                            if FLAGS.learn_slow_feature or FLAGS.learn_feature_separ:
                                 trajectory_sample = rbuffer.gather_all_transitions(FLAGS.neg_k)
                             else:
                                 trajectory_sample = rbuffer.gather_all_transitions()
@@ -1484,6 +1526,14 @@ def main(_):
                         neg_sample = process_observation(trajectory_sample.observation[:, -1, :-FLAGS.num_skills])
                         if FLAGS.clear_buffer_every_iter:
                             # print("train skill dynamics here !!!")
+                            if FLAGS.learn_feature_separ:
+                                dist_loss_separ = agent.feature.train(
+                                    input_obs,
+                                    target_obs,
+                                    neg_sample,
+                                    batch_size=FLAGS.skill_dyn_batch_size,
+                                    num_steps=FLAGS.skill_dyn_train_steps,
+                                    )
                             dist_loss = agent.skill_dynamics.train(
                                 input_obs,
                                 cur_skill,
@@ -1491,7 +1541,8 @@ def main(_):
                                 neg_sample,
                                 batch_size=FLAGS.skill_dyn_batch_size,
                                 batch_weights=is_weights,
-                                num_steps=FLAGS.skill_dyn_train_steps)
+                                num_steps=FLAGS.skill_dyn_train_steps,
+                                feature=agent.feature)
                         else:
                             agent.skill_dynamics.train(
                                 input_obs,
@@ -1603,12 +1654,20 @@ def main(_):
                                 simple_value=np.mean(np.concatenate(running_logp_altz)))
                         ]), sample_count)
                     # record feature loss
-                    train_writer.add_summary(
-                        tf.compat.v1.Summary(value=[
-                            tf.compat.v1.Summary.Value(
-                                tag='dads/feature_loss',
-                                simple_value=dist_loss)
-                        ]), sample_count)
+                    if FLAGS.learn_slow_feature:
+                        train_writer.add_summary(
+                            tf.compat.v1.Summary(value=[
+                                tf.compat.v1.Summary.Value(
+                                    tag='dads/feature_loss',
+                                    simple_value=dist_loss)
+                            ]), sample_count)
+                    elif FLAGS.learn_feature_separ:
+                        train_writer.add_summary(
+                            tf.compat.v1.Summary(value=[
+                                tf.compat.v1.Summary.Value(
+                                    tag='dads/feature_loss',
+                                    simple_value=dist_loss_separ)
+                            ]), sample_count)
 
                     if FLAGS.clear_buffer_every_iter:
                         rbuffer.clear()
@@ -1626,7 +1685,6 @@ def main(_):
                             cur_vid_dir,
                             eval_policy,
                             dynamics=agent.skill_dynamics,
-                            vid_name=FLAGS.vid_name,
                             plot_name='traj_plot',
                             iter_count=iter_count)
 
@@ -1651,7 +1709,7 @@ def main(_):
                         vid_dir,
                         eval_policy,
                         dynamics=agent.skill_dynamics,
-                        vid_name=vid_name,
+                        # vid_name=vid_name,
                         plot_name='traj_plot')
 
                 # for planning the evaluation directory is changed to save directory
@@ -1671,7 +1729,6 @@ def main(_):
                 save_label = 'goal_'
                 if 'discrete' in FLAGS.skill_type:
                     planning_fn = eval_planning
-
                 else:
                     planning_fn = eval_mppi
 
@@ -1735,7 +1792,9 @@ def main(_):
                             mppi_gamma=FLAGS.mppi_gamma,
                             prior_type=FLAGS.prior_type,
                             smoothing_beta=FLAGS.smoothing_beta,
-                            top_primitives=FLAGS.top_primitives
+                            top_primitives=FLAGS.top_primitives,
+                            use_latent=True,
+                            goal_coord=goal_coord,
                         )
                         reward /= (FLAGS.max_env_steps * np.linalg.norm(goal_coord))
                         ax1.plot(
@@ -1801,21 +1860,26 @@ def main(_):
 
                 plt.close()
                 print('Average reward for all goals:', average_reward_all_goals)
+                print("mean, std", np.mean(average_reward_all_goals), np.std(average_reward_all_goals))
 
             if FLAGS.run_eval_loop:
-                vid_dir = os.path.join(log_dir, 'videos', 'eval_loop')
+                vid_dir = os.path.join(log_dir, 'videos', 'eval_loop', "multi")
+                nums = 1
+                trajectory_dir = os.path.join(vid_dir, "../trajectories/")
+                tf.io.gfile.makedirs(trajectory_dir)
                 if not tf.io.gfile.exists(vid_dir):
                     tf.io.gfile.makedirs(vid_dir)
-                vid_name = FLAGS.vid_name
-                eval_loop(
-                    vid_dir,
-                    eval_policy,
-                    dynamics=agent.skill_dynamics,
-                    vid_name=vid_name,
-                    plot_name='traj_plot',
-                    per_skill_evaluations=3,
-                    plot_std=True,
-                    xlim=5)
+                for i in range(nums):
+                    eval_loop(
+                        vid_dir,
+                        eval_policy,
+                        dynamics=agent.skill_dynamics,
+                        plot_name='traj_plot',
+                        per_skill_evaluations=1,
+                        plot_std=True,
+                        xlim=5,
+                        iter_count=i,
+                        plot_feature=True)
 
 
 if __name__ == '__main__':

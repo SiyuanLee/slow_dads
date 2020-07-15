@@ -10,6 +10,7 @@
 *.log
 output/
 saved_models/
+data/
 env_test.py
 dkitty_eval.sh
 experiments/

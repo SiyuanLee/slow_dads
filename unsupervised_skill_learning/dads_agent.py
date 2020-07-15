@@ -29,7 +29,7 @@ import tensorflow as tf
 from tf_agents.agents.sac import sac_agent
 
 import skill_dynamics
-
+import feature
 nest = tf.nest
 
 
@@ -53,6 +53,7 @@ class DADSAgent(sac_agent.SacAgent):
                agent_graph=None,
                skill_dynamics_graph=None,
                learn_slow_feature=False,
+               learn_feature_separ=False,
                loss_coeff=0.1,
                *sac_args,
                **sac_kwargs):
@@ -63,6 +64,7 @@ class DADSAgent(sac_agent.SacAgent):
     self._save_directory = save_directory
     self._restrict_input_size = restrict_input_size
     self._process_observation = observation_modify_fn
+    self._learn_feature_separ = learn_feature_separ
 
     if agent_graph is None:
       self._graph = tf.compat.v1.get_default_graph()
@@ -71,6 +73,13 @@ class DADSAgent(sac_agent.SacAgent):
 
     if skill_dynamics_graph is None:
       skill_dynamics_graph = self._graph
+    if learn_feature_separ:
+      feature_graph = self._graph
+      self._feature = feature.Feature(
+          observation_size=skill_dynamics_observation_size,
+          graph=feature_graph,
+          normalize_observations=normalize_observations,
+      )
 
     # instantiate the skill dynamics
     self._skill_dynamics = skill_dynamics.SkillDynamics(
@@ -85,7 +94,8 @@ class DADSAgent(sac_agent.SacAgent):
         reweigh_batches=reweigh_batches,
         graph=skill_dynamics_graph,
         learn_slow_feature=learn_slow_feature,
-        loss_coeff=loss_coeff)
+        loss_coeff=loss_coeff,
+        learn_feature_separ=learn_feature_separ)
 
     super(DADSAgent, self).__init__(*sac_args, **sac_kwargs)
     self._placeholders_in_place = False
@@ -172,14 +182,25 @@ class DADSAgent(sac_agent.SacAgent):
       return self.agent_train_op
 
   def build_skill_dynamics_graph(self):
-    self._skill_dynamics.make_placeholders()
-    self._skill_dynamics.build_graph()
+    if self._learn_feature_separ:
+        self._feature.make_placeholders()
+        self._feature.build_graph()
+        self._feature.minimize_dist_op()
+        self._skill_dynamics.make_placeholders()
+        self._skill_dynamics.build_graph(feature=self._feature)
+    else:
+        self._skill_dynamics.make_placeholders()
+        self._skill_dynamics.build_graph()
     self._skill_dynamics.increase_prob_op(
         learning_rate=self._skill_dynamics_learning_rate)
 
   def create_savers(self):
     self._skill_dynamics.create_saver(
         save_prefix=os.path.join(self._save_directory, 'dynamics'))
+    if self._learn_feature_separ:
+        self._feature.create_saver(
+            save_prefix=os.path.join(self._save_directory, 'feature'))
+
 
   def set_sessions(self, initialize_or_restore_skill_dynamics, session=None):
     if session is not None:
@@ -189,9 +210,15 @@ class DADSAgent(sac_agent.SacAgent):
     self._skill_dynamics.set_session(
         initialize_or_restore_variables=initialize_or_restore_skill_dynamics,
         session=session)
+    if self._learn_feature_separ:
+        self._feature.set_session(
+            initialize_or_restore_variables=initialize_or_restore_skill_dynamics,
+            session=session)
 
   def save_variables(self, global_step):
     self._skill_dynamics.save_variables(global_step=global_step)
+    if self._learn_feature_separ:
+        self._feature.save_variables(global_step=global_step)
 
   def _get_dict(self, trajectories, batch_size=-1):
     tf.nest.assert_same_structure(self.collect_data_spec, trajectories)
@@ -246,3 +273,7 @@ class DADSAgent(sac_agent.SacAgent):
   @property
   def skill_dynamics(self):
     return self._skill_dynamics
+
+  @property
+  def feature(self):
+      return self._feature

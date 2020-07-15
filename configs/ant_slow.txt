@@ -3,7 +3,7 @@
 
 # metadata flags
 --save_model=dads
---save_freq=50
+--save_freq=100
 --record_freq=100
 --vid_name=skill
 
@@ -44,11 +44,15 @@
 --environment=Ant-v1
 --max_env_steps=200
 --reduced_observation=0
---learn_slow_feature=1
+# end to end learn with skill dyanmics
+--learn_slow_feature=0
+# separately learn slow features
+--learn_feature_separ=1
+--seed=0
 --neg_k=20
 
 # define the type of skills being learnt
---num_skills=30
+--num_skills=2
 --skill_type=cont_uniform
 --random_skills=100
 --num_evals=3
@@ -58,11 +62,10 @@
 --hidden_layer_size=512
 
 # (optional) skill dynamics hyperparameters
-# --graph_type=default   ## default
 --graph_type=separate
 --num_components=4
 --fix_variance=1
---normalize_data=1
+--normalize_data=0
 
 # (optional) clip sampled actions
 --action_clipping=1.
@@ -71,8 +74,8 @@
 --debug=0
 
 ### EVALUATION HYPERPARAMETERS -----------------
---run_eval=0
---run_eval_loop=1
+--run_eval=1
+--run_eval_loop=0
 
 # MPC hyperparameters
 --planning_horizon=1

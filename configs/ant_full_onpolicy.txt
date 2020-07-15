@@ -1,6 +1,6 @@
 
 ### TRAINING HYPERPARAMETERS -------------------
---run_train=1
+--run_train=0
 
 # metadata flags
 --save_model=dads
@@ -59,7 +59,7 @@
 --graph_type=default
 --num_components=4
 --fix_variance=1
---normalize_data=1
+--normalize_data=0
 
 # (optional) clip sampled actions
 --action_clipping=1.
@@ -68,7 +68,7 @@
 --debug=0
 
 ### EVALUATION HYPERPARAMETERS -----------------
---run_eval=0
+--run_eval=1
 --run_eval_loop=0
 
 # MPC hyperparameters
