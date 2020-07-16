@@ -430,6 +430,7 @@ class SkillDynamics:
 
             # predict deltas instead of observations
             next_timesteps -= timesteps
+            # print_color("Predict absolute next state !!!")
 
             if (self._restrict_observation > 0) and (not self._learn_feature_separ) and (not self._learn_slow_feature):
               timesteps = timesteps[:, self._restrict_observation:]
@@ -477,6 +478,7 @@ class SkillDynamics:
                     self.base_distribution = self._graph_reuse(
                         timesteps, actions, False)
                     self.predict_distribution = self._graph_reuse(latent_ts, actions, True)
+                    self.predict_mean = self.predict_distribution.mean()
                 else:
                     self.base_distribution, self.dist_loss, next_timesteps = self._graph_with_separate_skill_pipe(
                         timesteps, actions, pos_sample, neg_sample, next_timesteps)
@@ -484,7 +486,6 @@ class SkillDynamics:
             # if building multiple times, be careful about which log_prob you are optimizing
             self.log_probability = self.base_distribution.log_prob(next_timesteps)
             self.mean = self.base_distribution.mean()
-            self.predict_mean = self.predict_distribution.mean()
 
             return self.log_probability
 
@@ -544,7 +545,8 @@ class SkillDynamics:
                         tf.compat.v1.GraphKeys.GLOBAL_VARIABLES, scope=self._scope_name):
                     self._variable_list[var.name] = var
                 self._saver = tf.compat.v1.train.Saver(
-                    self._variable_list, save_relative_paths=True)
+                    self._variable_list, save_relative_paths=True,
+                    max_to_keep=1000)
                 self._save_prefix = save_prefix
 
     def save_variables(self, global_step):

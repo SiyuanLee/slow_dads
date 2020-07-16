@@ -841,6 +841,8 @@ def eval_loop(eval_dir,
         Traj_std.append(std_array)
         Total_trajectory.append(Trajectory_list)
 
+    min_len = min(len(traj_std) for traj_std in Traj_std)
+    Traj_std = [traj_std[:min_len] for traj_std in Traj_std]
     Traj_std = np.array(Traj_std)
     Traj_std_mean = np.mean(Traj_std, axis=0)
     error_bar = np.std(Traj_std, axis=0)
@@ -865,7 +867,7 @@ def eval_loop(eval_dir,
         # to save images while writing to CNS
         buf = io.BytesIO()
         # plt.title('Trajectories in Continuous Skill Space')
-        # plt.legend(loc='best')
+        plt.grid()
         plt.savefig(buf, dpi=600, bbox_inches='tight')
         buf.seek(0)
         if iter_count is not None:
@@ -1186,6 +1188,11 @@ def eval_mppi(
 
 
 def main(_):
+    # allow growth
+    gpus = tf.config.experimental.list_physical_devices('GPU')
+    if gpus:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
     # setting up
     assert FLAGS.learn_slow_feature + FLAGS.learn_feature_separ < 2
     # set seed
@@ -1370,12 +1377,13 @@ def main(_):
         agent.build_skill_dynamics_graph()
         agent.create_savers()
 
+        keep_num = FLAGS.num_epochs / FLAGS.save_freq
         # saving this way requires the saver to be out the object
         train_checkpointer = common.Checkpointer(
             ckpt_dir=os.path.join(save_dir, 'agent'),
             agent=agent,
             global_step=global_step,
-            max_to_keep=100)
+            max_to_keep=keep_num)
         policy_checkpointer = common.Checkpointer(
             ckpt_dir=os.path.join(save_dir, 'policy'),
             policy=agent.policy,
@@ -1517,7 +1525,6 @@ def main(_):
                             relabel_type=FLAGS.skill_dynamics_relabel_type,
                             cur_policy=relabel_policy,
                             cur_skill_dynamics=agent.skill_dynamics)
-                        print("trajectory_sample:", trajectory_sample.observation.shape)
                         input_obs = process_observation(
                             trajectory_sample.observation[:, 0, :-FLAGS.num_skills])
                         cur_skill = trajectory_sample.observation[:, 0, -FLAGS.num_skills:]
@@ -1534,20 +1541,30 @@ def main(_):
                                     batch_size=FLAGS.skill_dyn_batch_size,
                                     num_steps=FLAGS.skill_dyn_train_steps,
                                     )
-                            dist_loss = agent.skill_dynamics.train(
-                                input_obs,
-                                cur_skill,
-                                target_obs,
-                                neg_sample,
-                                batch_size=FLAGS.skill_dyn_batch_size,
-                                batch_weights=is_weights,
-                                num_steps=FLAGS.skill_dyn_train_steps,
-                                feature=agent.feature)
+                                dist_loss = agent.skill_dynamics.train(
+                                    input_obs,
+                                    cur_skill,
+                                    target_obs,
+                                    neg_sample,
+                                    batch_size=FLAGS.skill_dyn_batch_size,
+                                    batch_weights=is_weights,
+                                    num_steps=FLAGS.skill_dyn_train_steps,
+                                    feature=agent.feature)
+                            else:
+                                dist_loss = agent.skill_dynamics.train(
+                                    input_obs,
+                                    cur_skill,
+                                    target_obs,
+                                    neg_sample,
+                                    batch_size=FLAGS.skill_dyn_batch_size,
+                                    batch_weights=is_weights,
+                                    num_steps=FLAGS.skill_dyn_train_steps)
                         else:
                             agent.skill_dynamics.train(
                                 input_obs,
                                 cur_skill,
                                 target_obs,
+                                neg_sample,
                                 batch_size=-1,
                                 batch_weights=is_weights,
                                 num_steps=1)
@@ -1701,7 +1718,6 @@ def main(_):
                 vid_dir = os.path.join(log_dir, 'videos', 'final_eval')
                 if not tf.io.gfile.exists(vid_dir):
                     tf.io.gfile.makedirs(vid_dir)
-                vid_name = FLAGS.vid_name
 
                 # generic skill evaluation
                 if FLAGS.deterministic_eval or FLAGS.num_evals > 0:
@@ -1709,7 +1725,6 @@ def main(_):
                         vid_dir,
                         eval_policy,
                         dynamics=agent.skill_dynamics,
-                        # vid_name=vid_name,
                         plot_name='traj_plot')
 
                 # for planning the evaluation directory is changed to save directory
@@ -1720,147 +1735,156 @@ def main(_):
                     np.array([-10.0, -10.0]),
                     np.array([10.0, -10.0]),
                     np.array([0.0, -10.0]),
-                    np.array([5.0, 10.0])
+                    np.array([0.0, 10.0])
                 ]
 
+                nums = 1
+                reward_log = np.zeros((nums, 2))
                 eval_dir = os.path.join(eval_dir, 'mpc_eval')
                 if not tf.io.gfile.exists(eval_dir):
                     tf.io.gfile.makedirs(eval_dir)
-                save_label = 'goal_'
-                if 'discrete' in FLAGS.skill_type:
-                    planning_fn = eval_planning
-                else:
-                    planning_fn = eval_mppi
+                for i in range(nums):
+                    save_label = 'goal_' + str(i)
+                    if 'discrete' in FLAGS.skill_type:
+                        planning_fn = eval_planning
+                    else:
+                        planning_fn = eval_mppi
 
-                color_map = ['b', 'g', 'r', 'c', 'm', 'y', 'k']
+                    color_map = ['b', 'g', 'r', 'c', 'm', 'y', 'k']
 
-                average_reward_all_goals = []
-                _, ax1 = plt.subplots(1, 1)
-                ax1.set_xlim(-20, 20)
-                ax1.set_ylim(-20, 20)
+                    average_reward_all_goals = []
+                    _, ax1 = plt.subplots(1, 1)
+                    ax1.set_xlim(-20, 20)
+                    ax1.set_ylim(-20, 20)
 
-                final_text = open(os.path.join(eval_dir, 'eval_data.txt'), 'w')
+                    final_text = open(os.path.join(eval_dir, 'eval_data.txt'), 'w')
 
-                # goal_list = []
-                # for r in range(4, 50):
-                #   for _ in range(10):
-                #     theta = np.random.uniform(-np.pi, np.pi)
-                #     goal_x = r * np.cos(theta)
-                #     goal_y = r * np.sin(theta)
-                #     goal_list.append([r, theta, goal_x, goal_y])
+                    # goal_list = []
+                    # for r in range(4, 50):
+                    #   for _ in range(10):
+                    #     theta = np.random.uniform(-np.pi, np.pi)
+                    #     goal_x = r * np.cos(theta)
+                    #     goal_y = r * np.sin(theta)
+                    #     goal_list.append([r, theta, goal_x, goal_y])
 
-                # def _sample_goal():
-                #   goal_coords = np.random.uniform(0, 5, size=2)
-                #   # while np.linalg.norm(goal_coords) < np.linalg.norm([10., 10.]):
-                #   #   goal_coords = np.random.uniform(-25, 25, size=2)
-                #   return goal_coords
+                    # def _sample_goal():
+                    #   goal_coords = np.random.uniform(0, 5, size=2)
+                    #   # while np.linalg.norm(goal_coords) < np.linalg.norm([10., 10.]):
+                    #   #   goal_coords = np.random.uniform(-25, 25, size=2)
+                    #   return goal_coords
 
-                # goal_coord_list = [_sample_goal() for _ in range(50)]
+                    # goal_coord_list = [_sample_goal() for _ in range(50)]
 
-                for goal_idx, goal_coord in enumerate(goal_coord_list):
-                    # for goal_idx in range(1):
-                    print('Trying to reach the goal:', goal_coord)
-                    # eval_plan_env = video_wrapper.VideoWrapper(
-                    #     get_environment(env_name=FLAGS.environment + '_goal')
-                    #     base_path=eval_dir,
-                    #     base_name=save_label + '_' + str(goal_idx)))
-                    # goal_coord = np.array(item[2:])
-                    eval_plan_env = get_environment(env_name=FLAGS.environment + '_goal')
-                    # _, (ax1, ax2) = plt.subplots(1, 2)
-                    # ax1.set_xlim(-12, 12)
-                    # ax1.set_ylim(-12, 12)
-                    # ax2.set_xlim(-1, 1)
-                    # ax2.set_ylim(-1, 1)
-                    ax1.plot(goal_coord[0], goal_coord[1], marker='x', color='k')
-                    reward_list = []
+                    for goal_idx, goal_coord in enumerate(goal_coord_list):
+                        # for goal_idx in range(1):
+                        print('Trying to reach the goal:', goal_coord)
+                        # eval_plan_env = video_wrapper.VideoWrapper(
+                        #     get_environment(env_name=FLAGS.environment + '_goal')
+                        #     base_path=eval_dir,
+                        #     base_name=save_label + '_' + str(goal_idx)))
+                        # goal_coord = np.array(item[2:])
+                        eval_plan_env = get_environment(env_name=FLAGS.environment + '_goal')
+                        # _, (ax1, ax2) = plt.subplots(1, 2)
+                        # ax1.set_xlim(-12, 12)
+                        # ax1.set_ylim(-12, 12)
+                        # ax2.set_xlim(-1, 1)
+                        # ax2.set_ylim(-1, 1)
+                        ax1.plot(goal_coord[0], goal_coord[1], marker='x', color='k')
+                        reward_list = []
 
-                    def _steps_to_goal(dist_array):
-                        for idx in range(len(dist_array)):
-                            if -dist_array[idx] < 1.5:
-                                return idx
-                        return -1
+                        def _steps_to_goal(dist_array):
+                            for idx in range(len(dist_array)):
+                                if -dist_array[idx] < 1.5:
+                                    return idx
+                            return -1
 
-                    for _ in range(1):
-                        reward, actual_coords, primitives, distance_to_goal_array = planning_fn(
-                            eval_plan_env, agent.skill_dynamics, eval_policy,
-                            latent_action_space_size=FLAGS.num_skills,
-                            episode_horizon=FLAGS.max_env_steps,
-                            planning_horizon=FLAGS.planning_horizon,
-                            primitive_horizon=FLAGS.primitive_horizon,
-                            num_candidate_sequences=FLAGS.num_candidate_sequences,
-                            refine_steps=FLAGS.refine_steps,
-                            mppi_gamma=FLAGS.mppi_gamma,
-                            prior_type=FLAGS.prior_type,
-                            smoothing_beta=FLAGS.smoothing_beta,
-                            top_primitives=FLAGS.top_primitives,
-                            use_latent=True,
-                            goal_coord=goal_coord,
-                        )
-                        reward /= (FLAGS.max_env_steps * np.linalg.norm(goal_coord))
-                        ax1.plot(
-                            actual_coords[:, 0],
-                            actual_coords[:, 1],
-                            color_map[goal_idx % len(color_map)],
-                            linewidth=1)
-                        # ax2.plot(
-                        #     primitives[:, 0],
-                        #     primitives[:, 1],
-                        #     marker='x',
-                        #     color=color_map[try_idx % len(color_map)],
-                        #     linewidth=1)
-                        final_text.write(','.join([
-                            str(item) for item in [
-                                goal_coord[0],
-                                goal_coord[1],
-                                reward,
-                                _steps_to_goal(distance_to_goal_array),
-                                distance_to_goal_array[-3],
-                                distance_to_goal_array[-2],
-                                distance_to_goal_array[-1],
-                            ]
-                        ]) + '\n')
-                        print(reward)
-                        reward_list.append(reward)
+                        for _ in range(1):
+                            reward, actual_coords, primitives, distance_to_goal_array = planning_fn(
+                                eval_plan_env, agent.skill_dynamics, eval_policy,
+                                latent_action_space_size=FLAGS.num_skills,
+                                episode_horizon=FLAGS.max_env_steps,
+                                planning_horizon=FLAGS.planning_horizon,
+                                primitive_horizon=FLAGS.primitive_horizon,
+                                num_candidate_sequences=FLAGS.num_candidate_sequences,
+                                refine_steps=FLAGS.refine_steps,
+                                mppi_gamma=FLAGS.mppi_gamma,
+                                prior_type=FLAGS.prior_type,
+                                smoothing_beta=FLAGS.smoothing_beta,
+                                top_primitives=FLAGS.top_primitives,
+                                use_latent=False,
+                                goal_coord=goal_coord,
+                            )
+                            reward /= (FLAGS.max_env_steps * np.linalg.norm(goal_coord))
+                            ax1.plot(
+                                actual_coords[:, 0],
+                                actual_coords[:, 1],
+                                color_map[goal_idx % len(color_map)],
+                                linewidth=1)
+                            # ax2.plot(
+                            #     primitives[:, 0],
+                            #     primitives[:, 1],
+                            #     marker='x',
+                            #     color=color_map[try_idx % len(color_map)],
+                            #     linewidth=1)
+                            final_text.write(','.join([
+                                str(item) for item in [
+                                    goal_coord[0],
+                                    goal_coord[1],
+                                    reward,
+                                    _steps_to_goal(distance_to_goal_array),
+                                    distance_to_goal_array[-3],
+                                    distance_to_goal_array[-2],
+                                    distance_to_goal_array[-1],
+                                ]
+                            ]) + '\n')
+                            print(reward)
+                            reward_list.append(reward)
 
-                    eval_plan_env.close()
-                    average_reward_all_goals.append(np.mean(reward_list))
-                    print('Average reward:', np.mean(reward_list))
+                        eval_plan_env.close()
+                        average_reward_all_goals.append(np.mean(reward_list))
+                        print('Average reward:', np.mean(reward_list))
 
-                final_text.close()
-                # to save images while writing to CNS
-                buf = io.BytesIO()
-                plt.savefig(buf, dpi=600, bbox_inches='tight')
-                buf.seek(0)
-                image = tf.io.gfile.GFile(os.path.join(eval_dir, save_label + '.png'), 'w')
-                image.write(buf.read(-1))
-                plt.clf()
+                    final_text.close()
+                    # to save images while writing to CNS
+                    buf = io.BytesIO()
+                    plt.savefig(buf, dpi=600, bbox_inches='tight')
+                    buf.seek(0)
+                    image = tf.io.gfile.GFile(os.path.join(eval_dir, save_label + '.png'), 'w')
+                    image.write(buf.read(-1))
+                    plt.clf()
 
-                # for iter_idx in range(1, actual_coords.shape[0]):
-                #   _, ax1 = plt.subplots(1, 1)
-                #   ax1.set_xlim(-2, 15)
-                #   ax1.set_ylim(-2, 15)
-                #   ax1.plot(
-                #       actual_coords[:iter_idx, 0],
-                #       actual_coords[:iter_idx, 1],
-                #       linewidth=1.2)
-                #   ax1.scatter(
-                #       np.array(goal_coord_list)[:, 0],
-                #       np.array(goal_coord_list)[:, 1],
-                #       marker='x',
-                #       color='k')
-                #   buf = io.BytesIO()
-                #   plt.savefig(buf, dpi=200, bbox_inches='tight')
-                #   buf.seek(0)
-                #   image = tf.io.gfile.GFile(
-                #       os.path.join(eval_dir,
-                #                    save_label + '_' + '%04d' % (iter_idx) + '.png'),
-                #       'w')
-                #   image.write(buf.read(-1))
-                #   plt.clf()
+                    # for iter_idx in range(1, actual_coords.shape[0]):
+                    #   _, ax1 = plt.subplots(1, 1)
+                    #   ax1.set_xlim(-2, 15)
+                    #   ax1.set_ylim(-2, 15)
+                    #   ax1.plot(
+                    #       actual_coords[:iter_idx, 0],
+                    #       actual_coords[:iter_idx, 1],
+                    #       linewidth=1.2)
+                    #   ax1.scatter(
+                    #       np.array(goal_coord_list)[:, 0],
+                    #       np.array(goal_coord_list)[:, 1],
+                    #       marker='x',
+                    #       color='k')
+                    #   buf = io.BytesIO()
+                    #   plt.savefig(buf, dpi=200, bbox_inches='tight')
+                    #   buf.seek(0)
+                    #   image = tf.io.gfile.GFile(
+                    #       os.path.join(eval_dir,
+                    #                    save_label + '_' + '%04d' % (iter_idx) + '.png'),
+                    #       'w')
+                    #   image.write(buf.read(-1))
+                    #   plt.clf()
 
-                plt.close()
-                print('Average reward for all goals:', average_reward_all_goals)
-                print("mean, std", np.mean(average_reward_all_goals), np.std(average_reward_all_goals))
+                    plt.close()
+                    print("index", i)
+                    print('Average reward for all goals:', average_reward_all_goals)
+                    print("mean, std", np.mean(average_reward_all_goals), np.var(average_reward_all_goals))
+                    print("#" * 20)
+                    reward_log[i] = np.array([np.mean(average_reward_all_goals), np.var(average_reward_all_goals)])
+            max_i = np.argmax(reward_log[:, 0])
+            print("best results", reward_log[max_i])
+
 
             if FLAGS.run_eval_loop:
                 vid_dir = os.path.join(log_dir, 'videos', 'eval_loop', "multi")

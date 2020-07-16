@@ -22,16 +22,16 @@
 --vid_name=skill
 
 # optimization hyperparmaters
---replay_buffer_capacity=10000
+--replay_buffer_capacity=100000
 
 # (set clear_buffer_iter=1 for on-policy)
---clear_buffer_every_iter=0
---initial_collect_steps=5000
---collect_steps=2000
+--clear_buffer_every_iter=1
+--initial_collect_steps=0
+--collect_steps=4000
 --num_epochs=100000
 
 # skill dynamics optimization hyperparameters
---skill_dyn_train_steps=16
+--skill_dyn_train_steps=32
 --skill_dynamics_lr=3e-4
 --skill_dyn_batch_size=256
 
@@ -39,7 +39,7 @@
 --agent_gamma=0.995
 --agent_lr=3e-4
 --agent_entropy=0.1
---agent_train_steps=128
+--agent_train_steps=64
 --agent_batch_size=256
 
 # (optional, do not change for on-policy) relabelling or off-policy corrections
@@ -57,7 +57,7 @@
 ### SHARED HYPERPARAMETERS ---------------------
 --environment=Humanoid-v1
 --max_env_steps=1000
---reduced_observation=0
+--reduced_observation=2
 
 # define the type of skills being learnt
 --num_skills=5

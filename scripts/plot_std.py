@@ -6,7 +6,7 @@ sns.set_style("darkgrid")
 
 def mean_error(Traj_std, name=None):
     Traj_std_mean = np.mean(Traj_std, axis=0)
-    error_bar = np.std(Traj_std, axis=0)
+    error_bar = np.var(Traj_std, axis=0)
     plt.plot(Traj_std_mean, label=name)
     plt.fill_between(np.arange(len(error_bar)), Traj_std_mean - error_bar, Traj_std_mean + error_bar, alpha=0.2)
                      # facecolor='blue')

@@ -199,7 +199,8 @@ class Feature:
             tf.compat.v1.GraphKeys.GLOBAL_VARIABLES, scope=self._scope_name):
           self._variable_list[var.name] = var
         self._saver = tf.compat.v1.train.Saver(
-            self._variable_list, save_relative_paths=True)
+            self._variable_list, save_relative_paths=True,
+            max_to_keep=1000)
         self._save_prefix = save_prefix
 
   def save_variables(self, global_step):

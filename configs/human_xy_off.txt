@@ -57,7 +57,7 @@
 ### SHARED HYPERPARAMETERS ---------------------
 --environment=Humanoid-v1
 --max_env_steps=1000
---reduced_observation=0
+--reduced_observation=2
 
 # define the type of skills being learnt
 --num_skills=5
