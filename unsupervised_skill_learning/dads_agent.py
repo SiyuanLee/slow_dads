@@ -54,6 +54,7 @@ class DADSAgent(sac_agent.SacAgent):
                skill_dynamics_graph=None,
                learn_slow_feature=False,
                learn_feature_separ=False,
+               condition_none=False,
                loss_coeff=0.1,
                *sac_args,
                **sac_kwargs):
@@ -95,7 +96,8 @@ class DADSAgent(sac_agent.SacAgent):
         graph=skill_dynamics_graph,
         learn_slow_feature=learn_slow_feature,
         loss_coeff=loss_coeff,
-        learn_feature_separ=learn_feature_separ)
+        learn_feature_separ=learn_feature_separ,
+        condition_none=condition_none,)
 
     super(DADSAgent, self).__init__(*sac_args, **sac_kwargs)
     self._placeholders_in_place = False

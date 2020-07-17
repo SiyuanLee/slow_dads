@@ -86,6 +86,10 @@ flags.DEFINE_integer('learn_slow_feature', 0,
                      'Learn slow feature in skill dynamics')
 flags.DEFINE_integer('learn_feature_separ', 0,
                      'Learn slow feature in skill dynamics')
+flags.DEFINE_integer('condition_none', 0,
+                     'make the dyanmics only condition on z')
+flags.DEFINE_integer('early_stop', 0,
+                     'early stop feature learning')
 flags.DEFINE_integer('neg_k', 20,
                      'k step samples are regarded as negative samples')
 flags.DEFINE_integer('seed', 0,
@@ -278,8 +282,15 @@ def get_environment(env_name='point_mass'):
         env = humanoid.HumanoidEnv(expose_all_qpos=True)
         observation_omit_size = 2
     elif env_name == 'point_mass':
-        env = point_mass.PointMassEnv(expose_goal=False, expose_velocity=False)
+        env = point_mass.PointMassEnv(expose_goal=False, expose_velocity=True)
         observation_omit_size = 2
+    elif env_name == 'point_mass_goal':
+        observation_omit_size = 2
+        return wrap_env(
+            point_mass.PointMassEnv(
+                goal=goal_coord,
+                expose_goal=False),
+            max_episode_steps=FLAGS.max_env_steps)
     elif env_name == 'DClaw':
         env = dclaw.DClawTurnRandom()
         observation_omit_size = FLAGS.observation_omission_size
@@ -483,13 +494,15 @@ def process_observation(observation):
         qpos_dim = 26
     elif 'DKitty' in FLAGS.environment:
         qpos_dim = 36
+    elif FLAGS.environment == "point_mass":
+        qpos_dim = 3
 
     # x-axis
     if FLAGS.reduced_observation in [1, 5]:
         red_obs = [_shape_based_observation_processing(observation, 0)]
     # x-y plane
     elif FLAGS.reduced_observation in [2, 6]:
-        if FLAGS.environment == 'Ant-v1' or 'DKitty' in FLAGS.environment or 'DClaw' in FLAGS.environment:
+        if FLAGS.environment in ['Ant-v1', 'point_mass'] or 'DKitty' in FLAGS.environment or 'DClaw' in FLAGS.environment:
             red_obs = [
                 _shape_based_observation_processing(observation, 0),
                 _shape_based_observation_processing(observation, 1)
@@ -646,6 +659,7 @@ def run_on_env(env,
 
         env_action = action_step.action
         next_time_step = env.step(env_action)
+        # print("next time step", next_time_step.observation)
 
         skill_size = FLAGS.num_skills
         if skill_size > 0:
@@ -799,6 +813,7 @@ def eval_loop(eval_dir,
                 eval_trajectory[step_idx][0]
                 for step_idx in range(len(eval_trajectory))
             ])
+            # print("trajectory_states", trajectory_states)
             if FLAGS.learn_slow_feature or FLAGS.learn_feature_separ:
                 trajectory_feature = dynamics.eval_phi(trajectory_states)
                 Trajectory_feature.append(trajectory_feature)
@@ -1312,6 +1327,7 @@ def main(_):
             skill_dynamics_learning_rate=FLAGS.skill_dynamics_lr,
             learn_slow_feature=FLAGS.learn_slow_feature,
             learn_feature_separ=FLAGS.learn_feature_separ,
+            condition_none=FLAGS.condition_none,
             loss_coeff=FLAGS.loss_coeff,
             # SAC parameters
             time_step_spec=tf_agent_time_step_spec,
@@ -1527,6 +1543,7 @@ def main(_):
                             cur_skill_dynamics=agent.skill_dynamics)
                         input_obs = process_observation(
                             trajectory_sample.observation[:, 0, :-FLAGS.num_skills])
+                        print("input_obs", input_obs.shape)
                         cur_skill = trajectory_sample.observation[:, 0, -FLAGS.num_skills:]
                         target_obs = process_observation(
                             trajectory_sample.observation[:, 1, :-FLAGS.num_skills])
@@ -1534,13 +1551,16 @@ def main(_):
                         if FLAGS.clear_buffer_every_iter:
                             # print("train skill dynamics here !!!")
                             if FLAGS.learn_feature_separ:
-                                dist_loss_separ = agent.feature.train(
-                                    input_obs,
-                                    target_obs,
-                                    neg_sample,
-                                    batch_size=FLAGS.skill_dyn_batch_size,
-                                    num_steps=FLAGS.skill_dyn_train_steps,
-                                    )
+                                if FLAGS.early_stop == 0 or iter_count < FLAGS.early_stop:
+                                    dist_loss_separ = agent.feature.train(
+                                        input_obs,
+                                        target_obs,
+                                        neg_sample,
+                                        batch_size=FLAGS.skill_dyn_batch_size,
+                                        num_steps=FLAGS.skill_dyn_train_steps,
+                                        )
+                                else:
+                                    dist_loss_separ = 0.
                                 dist_loss = agent.skill_dynamics.train(
                                     input_obs,
                                     cur_skill,
@@ -1738,7 +1758,7 @@ def main(_):
                     np.array([0.0, 10.0])
                 ]
 
-                nums = 1
+                nums = 100
                 reward_log = np.zeros((nums, 2))
                 eval_dir = os.path.join(eval_dir, 'mpc_eval')
                 if not tf.io.gfile.exists(eval_dir):
@@ -1811,7 +1831,7 @@ def main(_):
                                 prior_type=FLAGS.prior_type,
                                 smoothing_beta=FLAGS.smoothing_beta,
                                 top_primitives=FLAGS.top_primitives,
-                                use_latent=False,
+                                use_latent=FLAGS.learn_feature_separ,
                                 goal_coord=goal_coord,
                             )
                             reward /= (FLAGS.max_env_steps * np.linalg.norm(goal_coord))
@@ -1882,8 +1902,8 @@ def main(_):
                     print("mean, std", np.mean(average_reward_all_goals), np.var(average_reward_all_goals))
                     print("#" * 20)
                     reward_log[i] = np.array([np.mean(average_reward_all_goals), np.var(average_reward_all_goals)])
-            max_i = np.argmax(reward_log[:, 0])
-            print("best results", reward_log[max_i])
+                max_i = np.argmax(reward_log[:, 0])
+                print("best results", reward_log[max_i])
 
 
             if FLAGS.run_eval_loop:
@@ -1901,9 +1921,10 @@ def main(_):
                         plot_name='traj_plot',
                         per_skill_evaluations=1,
                         plot_std=True,
-                        xlim=5,
+                        xlim=20,
                         iter_count=i,
-                        plot_feature=True)
+                        plot_feature=True,
+                        vid_name=FLAGS.vid_name)
 
 
 if __name__ == '__main__':

@@ -28,16 +28,14 @@ from gym.envs.mujoco import mujoco_env
 class PointMassEnv(mujoco_env.MujocoEnv, utils.EzPickle):
 
   def __init__(self,
-               target=None,
+               goal=None,
                wiggly_weight=0.,
                alt_xml=False,
                expose_velocity=True,
                expose_goal=True,
                use_simulator=False,
                model_path='point.xml'):
-    self._sample_target = target
-    if self._sample_target is not None:
-      self.goal = np.array([1.0, 1.0])
+    self.goal = goal
 
     self._expose_velocity = expose_velocity
     self._expose_goal = expose_goal
@@ -65,14 +63,16 @@ class PointMassEnv(mujoco_env.MujocoEnv, utils.EzPickle):
       ori = qpos[2]
       dx = math.cos(ori) * force
       dy = math.sin(ori) * force
-      qpos[0] = np.clip(qpos[0] + dx, -2, 2)
-      qpos[1] = np.clip(qpos[1] + dy, -2, 2)
+      qpos[0] = np.clip(qpos[0] + dx, -100, 100)
+      qpos[1] = np.clip(qpos[1] + dy, -100, 100)
       qvel = self.sim.data.qvel.flat.copy()
       self.set_state(qpos, qvel)
+      for _ in range(0, self.frame_skip):
+        self.sim.step()
 
     ob = self._get_obs()
-    if self._sample_target is not None and self.goal is not None:
-      reward = -np.linalg.norm(self.sim.data.qpos.flat[:2] - self.goal)**2
+    if self.goal is not None:
+      reward = -np.linalg.norm(self.sim.data.qpos.flat[:2] - self.goal)
     else:
       reward = 0.
 
@@ -82,12 +82,17 @@ class PointMassEnv(mujoco_env.MujocoEnv, utils.EzPickle):
     done = False
     return ob, reward, done, None
 
+  def compute_reward(self, ob, next_ob, action=None):
+    reward = -np.linalg.norm(next_ob[:, :2] - self.goal, axis=1)
+    return reward
+
   def _get_obs(self):
     new_obs = [self.sim.data.qpos.flat]
     if self._expose_velocity:
       new_obs += [self.sim.data.qvel.flat]
     if self._expose_goal and self.goal is not None:
       new_obs += [self.goal]
+    # print("new_obs", np.concatenate(new_obs))
     return np.concatenate(new_obs)
 
   def reset_model(self):
@@ -95,8 +100,6 @@ class PointMassEnv(mujoco_env.MujocoEnv, utils.EzPickle):
         self.np_random.uniform(low=-.2, high=.2, size=2),
         self.np_random.uniform(-np.pi, np.pi, size=1))
     qvel = self.init_qvel + self.np_random.randn(self.sim.model.nv) * .01
-    if self._sample_target is not None:
-      self.goal = self._sample_target(qpos[:2])
     self.set_state(qpos, qvel)
     return self._get_obs()
 
@@ -106,4 +109,7 @@ class PointMassEnv(mujoco_env.MujocoEnv, utils.EzPickle):
     self.set_state(state, qvel)
 
   def viewer_setup(self):
-    self.viewer.cam.distance = self.model.stat.extent * 0.5
+    # self.viewer.cam.distance = self.model.stat.extent * 0.5
+    self.viewer.cam.trackbodyid = -1
+    self.viewer.cam.distance = 60
+    self.viewer.cam.elevation = -90

@@ -48,8 +48,12 @@
 --learn_slow_feature=0
 # separately learn slow features
 --learn_feature_separ=1
+# dynamics not codition on state
+--condition_none=0
+# early stop feature learning
+--early_stop=2000
 --seed=0
---neg_k=100
+--neg_k=20
 
 # define the type of skills being learnt
 --num_skills=5
@@ -75,7 +79,8 @@
 --debug=0
 
 ### EVALUATION HYPERPARAMETERS -----------------
---run_eval=1
+--run_eval=0
+--run_eval_loop=1
 
 # MPC hyperparameters
 --planning_horizon=1

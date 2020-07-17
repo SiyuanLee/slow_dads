@@ -47,7 +47,8 @@ class SkillDynamics:
             scope_name='skill_dynamics',
             learn_slow_feature=False,
             loss_coeff=0.1,
-            learn_feature_separ=False):
+            learn_feature_separ=False,
+            condition_none=False):
 
         self._observation_size = observation_size
         self._action_size = action_size
@@ -57,6 +58,7 @@ class SkillDynamics:
         self._learn_slow_feature = learn_slow_feature
         self.loss_coeff = loss_coeff
         self._learn_feature_separ = learn_feature_separ
+        self._condition_none = condition_none
         if learn_slow_feature or learn_feature_separ:
             self.predict_dim = 2
         else:
@@ -275,7 +277,11 @@ class SkillDynamics:
                     reuse=reuse)
 
         # out = tf.compat.v1.layers.flatten(tf.einsum('ai,aj->aij', ts_out, skill_out))
-        out = tf.concat([ts_out, skill_out], axis=1)
+        if self._condition_none:
+            out = skill_out
+            print_color("only consition on z !!!")
+        else:
+            out = tf.concat([ts_out, skill_out], axis=1)
         with tf.compat.v1.variable_scope('joint'):
             for idx, layer_size in enumerate(self._fc_layer_params[1:]):
                 out = tf.compat.v1.layers.dense(

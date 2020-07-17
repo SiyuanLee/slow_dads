@@ -1,3 +1,4 @@
+# point slow
 ### TRAINING HYPERPARAMETERS -------------------
 --run_train=0
 
@@ -41,13 +42,17 @@
 --train_skill_dynamics_on_policy=0
 
 ### SHARED HYPERPARAMETERS ---------------------
---environment=Ant-v1
+--environment=point_mass
 --max_env_steps=200
 --reduced_observation=0
 # end to end learn with skill dyanmics
 --learn_slow_feature=0
 # separately learn slow features
 --learn_feature_separ=1
+# dynamics not codition on state
+--condition_none=0
+# early stop feature learning
+--early_stop=0
 --seed=0
 --neg_k=20
 
